@@ -1454,8 +1454,13 @@ class _TestZodbComponent(SecurityTestCase):
       text_content=text_content,
       portal_type=self._portal_type)
 
-  def _getComponentFullModuleName(self, module_name):
-    return self._document_class._getDynamicModuleNamespace() + '.' + module_name
+  def _getComponentFullModuleName(self, module_name, version=None):
+    if version is None:
+      return (self._document_class._getDynamicModuleNamespace() + '.' +
+              module_name)
+    else:
+      return (self._document_class._getDynamicModuleNamespace() + '.' +
+              version + '_version' + '.' + module_name)
 
   def failIfModuleImportable(self, module_name):
     """
@@ -2136,6 +2141,83 @@ def function_foo(*args, **kwargs):
     self.assertUserCanChangeLocalRoles(user_id, component)
     self.assertUserCanModifyDocument(user_id, component)
     self.assertUserCanDeleteDocument(user_id, component)
+
+  def testPylint(self):
+    imported_reference = self._generateReference('TestPylintImported')
+    imported_component = self._newComponent(imported_reference)
+    imported_component.setTextContent(imported_component.getTextContent() + """
+def hoge():
+  return 'OK'
+""")
+
+    reference = self._generateReference('TestPylint')
+    component = self._newComponent(reference)
+    self.portal.portal_workflow.doActionFor(component, 'validate_action')
+    self.tic()
+    self.assertEqual(component.getValidationState(), 'validated')
+    self.assertEqual(component.getTextContentErrorMessageList(), [])
+    self.assertEqual(component.getTextContentWarningMessageList(), [])
+    self.assertModuleImportable(reference)
+
+    imported_module_name = self._getComponentFullModuleName(
+      imported_reference)
+    imported_module_name_with_version = self._getComponentFullModuleName(
+      imported_reference, version='erp5')
+
+    component.setTextContent(
+      """from %(module_name)s import hoge
+from %(module_name_with_version)s import hoge
+
+import %(module_name)s
+import %(module_name_with_version)s
+
+# To avoid 'unused-import' warnings
+hoge()
+%(module_name)s.hoge()
+%(module_name_with_version)s.hoge()
+
+""" % (dict(module_name=imported_module_name,
+            module_name_with_version=imported_module_name_with_version)) +
+      component.getTextContent())
+    self.tic()
+    self.assertEqual(component.getValidationState(), 'modified')
+    self.assertEqual(
+      component.getTextContentErrorMessageList(),
+      ["F:  1,  0: Unable to import '%s' (import-error)" % imported_module_name,
+       "F:  2,  0: Unable to import '%s' (import-error)" % imported_module_name_with_version,
+       "F:  4,  0: Unable to import '%s' (import-error)" % imported_module_name,
+       "F:  5,  0: Unable to import '%s' (import-error)" % imported_module_name_with_version])
+    self.assertEqual(component.getTextContentWarningMessageList(), [])
+
+    self.portal.portal_workflow.doActionFor(imported_component, 'validate_action')
+    self.tic()
+    self.assertEqual(imported_component.getValidationState(), 'validated')
+
+    self.portal.portal_workflow.doActionFor(component, 'validate_action')
+    self.tic()
+    self.assertEqual(component.getValidationState(), 'validated')
+    self.assertEqual(component.getTextContentErrorMessageList(), [])
+    self.assertEqual(component.getTextContentWarningMessageList(), [])
+
+    component.setTextContent(
+      """from %(module_name)s import undefined
+from %(module_name_with_version)s import undefined
+
+# To avoid 'unused-import' warning
+undefined()
+
+""" % (dict(module_name=imported_module_name,
+            module_name_with_version=imported_module_name_with_version)) +
+      component.getTextContent())
+    self.tic()
+    self.assertEqual(component.getValidationState(), 'modified')
+    self.assertEqual(
+      component.getTextContentErrorMessageList(),
+      ["E:  1,  0: No name 'undefined' in module '%s' (no-name-in-module)" %
+       imported_module_name,
+       "E:  2,  0: No name 'undefined' in module '%s' (no-name-in-module)" %
+       imported_module_name_with_version])
+    self.assertEqual(component.getTextContentWarningMessageList(), [])
 
 from Products.ERP5Type.Core.ExtensionComponent import ExtensionComponent
 
